@@ -29,6 +29,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             debtor_id INTEGER,
             creditor_id INTEGER,
+            action_type TEXT,
             status TEXT DEFAULT 'pending'
         )
     ''')
@@ -40,7 +41,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"سلام {user.first_name} عزیز! به ربات Xengage خوش آمدی.\n\n"
         "برای اینکه بتوانی در گروه حمایت شرکت کنی، باید آیدی توییتر خودت را ثبت کنی.\n"
-        "لطفاً دستور /register را بفرست یا آیدی توییترت را بدون @ ارسال کن."
+        "لطفاً آیدی توییترت را بدون @ ارسال کن."
     )
     await update.message.reply_text(welcome_text)
 
@@ -53,44 +54,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_username = update.effective_user.username
     chat_type = update.effective_chat.type
 
-    # ۱. اگر پیام در گروه فرستاده شده و حاوی لینک توییتر است
+    # ۱. پردازش پیام‌ها در گروه (شکار لینک‌ها)
     if chat_type in ["group", "supergroup"]:
         if "twitter.com" in text.lower() or "x.com" in text.lower():
-            # استخراج لینک توییتر با استفاده از Regex
             url_match = re.search(r'(https?://[^\s]+)', text)
             if not url_match:
                 return
             tweet_link = url_match.group(0)
 
-            # چک کردن اینکه کاربر ثبت نام کرده یا نه
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute('SELECT twitter_id FROM users WHERE user_id = ?', (user_id,))
             user_data = cursor.fetchone()
 
             if not user_data:
-                # کاربر ثبت نام نکرده -> پاک کردن پیام و اخطار
                 await update.message.delete()
                 warning_msg = await update.message.reply_text(f"❌ کاربر @{telegram_username}، شما ابتدا باید در پی‌وی ربات (@XengageRobot) ثبت‌نام کنید!")
-                # حذف خودکار پیام اخطار بعد از ۱۰ ثانیه برای خلوت ماندن گروه
                 context.job_queue.run_once(lambda ctx: warning_msg.delete(), 10)
                 conn.close()
                 return
 
             twitter_handle = user_data[0]
-            
-            # بروزرسانی آخرین لینک کاربر در دیتابیس
             cursor.execute('UPDATE users SET last_tweet_link = ? WHERE user_id = ?', (tweet_link, user_id))
             conn.commit()
             conn.close()
 
-            # پاک کردن پیام اصلی کاربر برای ارسال پیام شکیل ربات
             await update.message.delete()
 
-            # ساخت دکمه‌های شیشه‌ای حمایتی
+            # دکمه‌ها همراه با فالو
             keyboard = [
                 [
-                    InlineKeyboardButton("❤️ Likeed", callback_data=f"like_{user_id}"),
+                    InlineKeyboardButton("👥 Followed", callback_data=f"follow_{user_id}"),
+                    InlineKeyboardButton("❤️ Liked", callback_data=f"like_{user_id}"),
                     InlineKeyboardButton("🔁 Retweeted", callback_data=f"rt_{user_id}"),
                     InlineKeyboardButton("💬 Commented", callback_data=f"comment_{user_id}")
                 ]
@@ -107,12 +102,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=group_post_text, reply_markup=reply_markup, parse_mode="Markdown")
             return
 
-    # ۲. اگر پیام در چت خصوصی (PV) فرستاده شده (برای ثبت نام)
+    # ۲. پردازش ثبت‌نام در پی‌وی (PV)
     if chat_type == "private":
-        if text.startswith('@'):
-            twitter_id = text[1:]
-        else:
-            twitter_id = text
+        twitter_id = text[1:] if text.startswith('@') else text
 
         conn = sqlite3.connect('bot_database.db')
         cursor = conn.cursor()
@@ -125,6 +117,61 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         await update.message.reply_text(f"✅ موفقیت‌آمیز بود!\nآیدی توییتر شما با موفقیت ثبت شد: @{twitter_id}")
+
+# پردازش کلیک روی دکمه‌ها
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # حذف حالت در حال لود دکمه
+    
+    clicker_id = query.from_user.id
+    clicker_username = query.from_user.username
+    
+    # استخراج اطلاعات از callback_data (مثال: follow_123456)
+    data_parts = query.data.split('_')
+    action = data_parts[0]
+    creator_id = int(data_parts[1])
+
+    # اگر کاربر خواست دکمه پست خودش را بزند، ربات مچش را می‌گیرد!
+    if clicker_id == creator_id:
+        return
+
+    # بررسی اینکه آیا فرد حمایت‌کننده خودش ثبت‌نام کرده یا نه
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT twitter_id, last_tweet_link FROM users WHERE user_id = ?', (clicker_id,))
+    clicker_data = cursor.fetchone()
+
+    if not clicker_data:
+        # اگر ثبت نام نکرده بود، پی‌ام موقت به او نشان بده
+        return
+
+    clicker_twitter = clicker_data[0]
+    clicker_last_link = clicker_data[1] if clicker_data[1] else "لینکی ثبت نشده است"
+
+    # ثبت در جدول بدهی‌ها (پست‌گذار حالا به حمایت‌کننده بدهکار است)
+    cursor.execute('''
+        INSERT INTO debts (debtor_id, creditor_id, action_type)
+        VALUES (?, ?, ?)
+    ''', (creator_id, clicker_id, action))
+    conn.commit()
+    conn.close()
+
+    # ترجمه اکشن به متن فارسی برای ارسال به پی‌وی
+    action_fa = {"follow": "فالو", "like": "لایک", "rt": "ریتوییت", "comment": "کامنت"}[action]
+
+    # ارسال پیام خصوصی به صاحب پست (Creator)
+    alert_text = (
+        f"📣 **حمایت جدید دریافت شد!**\n\n"
+        f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را **{action_fa}** کرد.\n\n"
+        f"تعهد شما: حالا نوبت شماست که او را حمایت کنید!\n"
+        f"🔗 آخرین لینک این کاربر: {clicker_last_link}"
+    )
+    
+    try:
+        await context.bot.send_message(chat_id=creator_id, text=alert_text, parse_mode="Markdown")
+    except Exception as e:
+        # اگر صاحب پست ربات را بلاک کرده باشد یا استارت نزده باشد
+        logging.error(f"Could not send PV message to {creator_id}: {e}")
 
 def main():
     init_db()
@@ -140,6 +187,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(handle_buttons)) # هندلر دکمه‌ها
     
     print("ربات Xengage روشن شد و منتظر پیام‌هاست...")
     application.run_polling()
