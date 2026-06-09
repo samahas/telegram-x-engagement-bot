@@ -2,10 +2,10 @@ import sqlite3
 import logging
 import re
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, LinkPreviewOptions
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# فعال‌سازی سیستم لاگ
+# فعال‌سازی سیستم لاگ پیشرفته برای دیدن ارورهای احتمالی
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # 🔴 توکن اختصاصی خودت را این‌جا بگذار
@@ -76,20 +76,17 @@ async def delete_message_delayed(bot, chat_id, message_id, delay_seconds=15):
     except Exception:
         pass 
 
-# تایمر خودکار پس‌زمینه
 async def auto_approve_post_delayed(bot, chat_id, message_id, delay_seconds=15):
     await asyncio.sleep(delay_seconds)
-    # بررسی می‌کنیم که آیا پست هنوز هست و آیا قبلاً توسط کاربر تایید شده یا نه
     if message_id in PENDING_POSTS:
         post_data = PENDING_POSTS[message_id]
         if post_data.get("status") == "pending":
-            post_data["status"] = "deployed" # تغییر وضعیت برای جلوگیری از تداخل
-            # حذف امن از دیکشنری
+            post_data["status"] = "deployed"
             data_to_deploy = PENDING_POSTS.pop(message_id, None)
             if data_to_deploy:
                 await deploy_final_post(bot, chat_id, message_id, data_to_deploy, forced_all=True)
 
-# تابع نهایی مستقر کردن پست در گروه
+# 🔥 تابع با فرمت فوق‌العاده پایدار HTML و چیدمان استاندارد دکمه‌ها
 async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all=False):
     creator_id = post_data["creator_id"]
     telegram_username = post_data["username"]
@@ -105,12 +102,10 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
         if forced_all or options[action]:
             keyboard_buttons.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
     
-    # اگر هیچ گزینه‌ای انتخاب نشده بود، پیش‌فرض همه را فعال کن
     if not keyboard_buttons:
         for action in available_actions:
             keyboard_buttons.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
 
-    # هر دکمه در یک ردیف جداگانه یا چیدمان منظم دو تایی برای ظاهر شیک‌تر در گروه
     fixed_keyboard = []
     row = []
     for btn in keyboard_buttons:
@@ -123,25 +118,28 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
 
     reply_markup = InlineKeyboardMarkup(fixed_keyboard)
 
+    # تغییر فرمت به HTML برای جلوگیری از کراش کاراکترهای خاص
     group_post_text = (
-        f"🚀 **New Support Request!**\n\n"
-        f"👤 **User:** @{telegram_username}\n"
-        f"🐦 **X (Twitter):** @{twitter_handle}\n\n"
-        f"🔗 **Link:** {tweet_link}\n\n"
+        f"🚀 <b>New Support Request!</b>\n\n"
+        f"👤 <b>User:</b> @{telegram_username}\n"
+        f"🐦 <b>X (Twitter):</b> @{twitter_handle}\n\n"
+        f"🔗 <b>Link:</b> {tweet_link}\n\n"
         f"👇 Please support and click the buttons below:"
     )
     
     try:
+        # تغییر پارامترها به حالت ساده‌تر و پایدارتر
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=original_msg_id,
             text=group_post_text,
             reply_markup=reply_markup,
-            parse_mode="Markdown",
-            link_preview_options=LinkPreviewOptions(is_disabled=True)
+            parse_mode="HTML"
         )
-        print(f"✅ پست حمایت شماره {original_msg_id} با موفقیت در گروه مستقر شد.")
+        print(f"✅ [موفقیت] پست حمایت شماره {original_msg_id} با موفقیت مستقر شد.")
     except Exception as e:
+        # حالا اگر مشکلی باشه دقیقاً توی ترمینال برات چاپ می‌کنه چه خبره
+        print(f"❌ [خطا در فرستادن پست نهایی]: {e}")
         logging.error(f"Error deploying final post: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -167,20 +165,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if telegram_username:
                     user_mention = f"@{telegram_username}"
                 else:
-                    first_name_clean = update.effective_user.first_name.replace('[', '').replace(']', '')
-                    user_mention = f"[{first_name_clean}](tg://user?id={user_id})"
+                    first_name_clean = update.effective_user.first_name.replace('<', '').replace('>', '')
+                    user_mention = f'<a href="tg://user?id={user_id}">{first_name_clean}</a>'
                 
                 alert_link_text = (
                     f"❌ کاربر {user_mention}، لینک شما حذف شد!\n"
                     f"برای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات شده و آیدی توییتر خود را ثبت کنید.\n\n"
-                    f"🔗 **[ورود و ثبت‌نام در ربات](t.me/XengageRobot)**\n\n"
-                    f"⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._"
+                    f"🔗 <b><a href='t.me/XengageRobot'>ورود و ثبت‌نام در ربات</a></b>\n\n"
+                    f"⏱ <i>این پیام طی ۱۵ ثانیه حذف می‌شود.</i>"
                 )
                 alert_link_msg = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=alert_link_text,
-                    parse_mode="Markdown",
-                    link_preview_options=LinkPreviewOptions(is_disabled=True)
+                    parse_mode="HTML"
                 )
                 asyncio.create_task(delete_message_delayed(context.bot, update.effective_chat.id, alert_link_msg.message_id, 15))
                 conn.close()
@@ -210,20 +207,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             
             menu_text = (
-                f"🛠 **تنظیمات پست حمایت جدید**\n\n"
-                f"👤 کاربر: **{display_name}**\n"
+                f"🛠 <b>تنظیمات پست حمایت جدید</b>\n\n"
+                f"👤 کاربر: <b>{display_name}</b>\n"
                 f"نوع حمایت‌های مورد نیاز برای این توییت را تیک بزنید. اگر تا ۱۵ ثانیه دیگر انتخابی نکنید، ربات به صورت خودکار تمام گزینه‌ها را فعال می‌کند:\n\n"
-                f"⏱ _مهلت زمان انتخاب: ۱۵ ثانیه_"
+                f"⏱ <i>مهلت زمان انتخاب: ۱۵ ثانیه</i>"
             )
 
             menu_msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=menu_text,
                 reply_markup=InlineKeyboardMarkup(setup_keyboard),
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
 
-            # وضعیت اولیه روی pending تنظیم می‌شود
             PENDING_POSTS[menu_msg.message_id] = {
                 "creator_id": user_id,
                 "username": display_name,
@@ -264,7 +260,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         post_data = PENDING_POSTS[message_id]
         
-        # اگر وضعیت دیگر pending نباشد یعنی قبلاً پردازش شده
         if post_data.get("status") != "pending":
             await query.answer("⚠️ این پست قبلاً ارسال شده است.", show_alert=True)
             return
@@ -276,7 +271,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action_type = data.split('_')[1]
 
         if action_type == "approve":
-            post_data["status"] = "deployed" # تغییر وضعیت فوری برای قفل کردن تایمر همزمان
+            post_data["status"] = "deployed"
             final_data = PENDING_POSTS.pop(message_id, None)
             await query.answer("🚀 در حال فرستادن پست به گروه...")
             if final_data:
@@ -305,7 +300,10 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ]
         
-        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(updated_keyboard))
+        try:
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(updated_keyboard))
+        except Exception as e:
+            print(f"❌ [خطا در ادیت منو تیک‌ها]: {e}")
         await query.answer()
         return
 
@@ -330,19 +328,18 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if clicker_username:
                 user_mention = f"@{clicker_username}"
             else:
-                first_name_clean = query.from_user.first_name.replace('[', '').replace(']', '')
-                user_mention = f"[{first_name_clean}](tg://user?id={clicker_id})"
+                first_name_clean = query.from_user.first_name.replace('<', '').replace('>', '')
+                user_mention = f'<a href="tg://user?id={clicker_id}">{first_name_clean}</a>'
             
             alert_btn_text = (
                 f"⚠️ کاربر {user_mention}، برای ثبت حمایت خود ابتدا باید در پی‌وی ربات ثبت‌نام کنید!\n\n"
-                f"🔗 **[ورود و ثبت‌نام در ربات](t.me/XengageRobot)**\n\n"
-                f"⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._"
+                f"🔗 <b><a href='t.me/XengageRobot'>ورود و ثبت‌نام در ربات</a></b>\n\n"
+                f"⏱ <i>این پیام طی ۱۵ ثانیه حذف می‌شود.</i>"
             )
             alert_btn_msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=alert_btn_text,
-                parse_mode="Markdown",
-                link_preview_options=LinkPreviewOptions(is_disabled=True)
+                parse_mode="HTML"
             )
             asyncio.create_task(delete_message_delayed(context.bot, update.effective_chat.id, alert_btn_msg.message_id, 15))
             conn.close()
@@ -394,8 +391,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         try:
-            preview_options = LinkPreviewOptions(is_disabled=True)
-            await context.bot.send_message(chat_id=creator_id, text=alert_text, link_preview_options=preview_options)
+            await context.bot.send_message(chat_id=creator_id, text=alert_text)
         except Exception as e:
             logging.error(f"Could not send notification to {creator_id}: {e}")
 
