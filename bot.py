@@ -100,14 +100,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if not user_data:
                 await update.message.delete()
-                user_mention = f"@{telegram_username}" if telegram_username else update.effective_user.first_name
                 
-                # 🔴 تغییر متن هشدار حذف به ۱۵ ثانیه برای لینک
+                # 🔥 ساخت منشن هوشمند بدون باگِ علامت @ اضافی روی اسم
+                if telegram_username:
+                    user_mention = f"@{telegram_username}"
+                else:
+                    first_name_clean = update.effective_user.first_name.replace('[', '').replace(']', '')
+                    user_mention = f"[{first_name_clean}](tg://user?id={user_id})"
+                
+                # 🔴 اصلاح متن اخطار لینک و شیک‌سازی لینک پی‌وی ربات
+                alert_link_text = (
+                    f"❌ کاربر {user_mention}، لینک شما حذف شد!\n"
+                    f"برای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات شده و آیدی توییتر خود را ثبت کنید.\n\n"
+                    f"🔗 **[ورود و ثبت‌نام در ربات](t.me/XengageRobot)**\n\n"
+                    f"⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._"
+                )
+                
                 alert_link_msg = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"❌ کاربر {user_mention}، لینک شما حذف شد!\nبرای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات (@XengageRobot) شده و آیدی توییتر خود را ثبت کنید.\n\n⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._",
-                    parse_mode="Markdown"
+                    text=alert_link_text,
+                    parse_mode="Markdown",
+                    link_preview_options=LinkPreviewOptions(is_disabled=True)
                 )
+                
                 # حذف راس ۱۵ ثانیه
                 asyncio.create_task(delete_message_delayed(context.bot, update.effective_chat.id, alert_link_msg.message_id, 15))
                 
@@ -133,7 +148,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             group_post_text = (
                 f"🚀 **New Support Request!**\n\n"
-                f"👤 **User:** @{telegram_username}\n"
+                f"👤 **User:** @{telegram_username if telegram_username else update.effective_user.first_name}\n"
                 f"🐦 **X (Twitter):** @{twitter_handle}\n\n"
                 f"🔗 **Link:** {tweet_link}\n\n"
                 f"👇 Please support and click the buttons below:"
@@ -190,13 +205,26 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # اگر کاربر کلیک‌کننده غریبه باشد و ثبت‌نام نکرده باشد
     if not clicker_data:
         await query.answer() 
-        user_mention = f"@{clicker_username}" if clicker_username else query.from_user.first_name
         
-        # 🔴 تغییر متن هشدار حذف به ۱۵ ثانیه برای دکمه
+        # 🔥 ساخت منشن هوشمند برای دکمه‌ها بدون باگ علامت @
+        if clicker_username:
+            user_mention = f"@{clicker_username}"
+        else:
+            first_name_clean = query.from_user.first_name.replace('[', '').replace(']', '')
+            user_mention = f"[{first_name_clean}](tg://user?id={clicker_id})"
+        
+        # 🔴 اصلاح متن اخطار دکمه و شیک‌سازی لینک پی‌وی ربات
+        alert_btn_text = (
+            f"⚠️ کاربر {user_mention}، برای ثبت حمایت خود ابتدا باید در پی‌وی ربات ثبت‌نام کنید!\n\n"
+            f"🔗 **[ورود و ثبت‌نام در ربات](t.me/XengageRobot)**\n\n"
+            f"⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._"
+        )
+        
         alert_btn_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"⚠️ کاربر {user_mention}، برای ثبت حمایت خود ابتدا باید در پی‌وی ربات ثبت‌نام کنید!\n🔗 ورود به ربات: @XengageRobot\n\n⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._",
-            parse_mode="Markdown"
+            text=alert_btn_text,
+            parse_mode="Markdown",
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
         # حذف راس ۱۵ ثانیه
         asyncio.create_task(delete_message_delayed(context.bot, update.effective_chat.id, alert_btn_msg.message_id, 15))
@@ -244,7 +272,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     alert_text = (
         f"📣 حمایت جدید دریافت شد!\n\n"
-        f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را [{action_fa}] کرد.\n\n"
+        f"👤 کاربر @{clicker_username if clicker_username else query.from_user.first_name} (آیدی توییتر: @{clicker_twitter}) پست شما را [{action_fa}] کرد.\n\n"
         f"تعهد شما: حالا نوبت شماست که او را حمایت کنید!\n"
         f"🔗 آخرین لینک این کاربر: {clicker_last_link}"
     )
