@@ -14,14 +14,12 @@ TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 # تنظیمات پروکسی برای عبور از فیلترینگ ایران
 PROXY_URL = "http://127.0.0.1:10809" 
 
-# متغیر موقت برای ذخیره وضعیت انتخاب دکمه‌ها توسط کاربران (تا قبل از تایید نهایی)
-# ساختار: { message_id: { "creator_id": 123, "tweet_link": "...", "username": "...", "twitter": "...", "options": {"follow": True, "like": True, ...} } }
+# متغیر موقت برای ذخیره وضعیت انتخاب دکمه‌ها
 PENDING_POSTS = {}
 
 def init_db():
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
-    # جدول کاربران
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -30,7 +28,6 @@ def init_db():
             last_tweet_link TEXT
         )
     ''')
-    # جدول بدهی‌ها و تراکنش‌های کلی
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS debts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +37,6 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )
     ''')
-    # جدول اکشن‌ها برای بررسی کلیک‌های یکتا
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +69,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("لطفاً آیدی توییتر (X) خودت را بدون علامت @ ارسال کن:")
 
-# تابع کمکی برای حذف خودکار پیام‌های هشدار غریبه‌ها بعد از ۱۵ ثانیه
 async def delete_message_delayed(bot, chat_id, message_id, delay_seconds=15):
     await asyncio.sleep(delay_seconds)
     try:
@@ -81,16 +76,14 @@ async def delete_message_delayed(bot, chat_id, message_id, delay_seconds=15):
     except Exception:
         pass 
 
-# تابع کمکی برای ارسال خودکار پست با ۴ گزینه اگر کاربر بعد از ۱۵ ثانیه واکنشی نشان نداد
 async def auto_approve_post_delayed(bot, chat_id, message_id, delay_seconds=15):
     await asyncio.sleep(delay_seconds)
-    # اگر پست هنوز در لیست در انتظارها باشد، یعنی کاربر تاییدش نکرده است
     if message_id in PENDING_POSTS:
         post_data = PENDING_POSTS.pop(message_id, None)
         if post_data:
             await deploy_final_post(bot, chat_id, message_id, post_data, forced_all=True)
 
-# تابع نهایی فرستادن/تبدیل پست به باکس حمایت اصلی در گروه
+# 🔥 تابع اصلاح شده با ساختار دکمه‌های استاندارد تلگرام
 async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all=False):
     creator_id = post_data["creator_id"]
     telegram_username = post_data["username"]
@@ -98,7 +91,6 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
     tweet_link = post_data["tweet_link"]
     options = post_data["options"]
 
-    # ساخت دکمه‌ها بر اساس انتخاب کاربر (یا همه گزینه‌ها در صورت اتمام زمان)
     keyboard_row = []
     available_actions = ["follow", "like", "rt", "comment"]
     labels = {"follow": "👥 Follow", "like": "❤️ Like", "rt": "🔁 Retweet", "comment": "💬 Comment"}
@@ -107,11 +99,12 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
         if forced_all or options[action]:
             keyboard_row.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
     
-    # اگر کاربر هیچ گزینه‌ای انتخاب نکرده بود و تایید زد، به صورت خودکار همه را بگذار
+    # اگر هیچ چیز انتخاب نکرده بود، همه را فعال کن
     if not keyboard_row:
         for action in available_actions:
             keyboard_row.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
 
+    # اصلاح شد: ساختار کیبورد باید به صورت لیست در لیست (ماتریس) باشد
     reply_markup = InlineKeyboardMarkup([keyboard_row])
 
     group_post_text = (
@@ -123,7 +116,6 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
     )
     
     try:
-        # پیام منوی انتخاب قبلی را ویرایش و تبدیل به پست حمایت اصلی می‌کنیم
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=original_msg_id,
@@ -132,6 +124,7 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
             parse_mode="Markdown",
             link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
+        print(f"✅ پست حمایت شماره {original_msg_id} با موفقیت در گروه مستقر شد.")
     except Exception as e:
         logging.error(f"Error deploying final post: {e}")
 
@@ -153,7 +146,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.execute('SELECT twitter_id FROM users WHERE user_id = ?', (user_id,))
             user_data = cursor.fetchone()
 
-            # اگر کاربر ثبت‌نام نکرده باشد
             if not user_data:
                 await update.message.delete()
                 if telegram_username:
@@ -183,13 +175,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             conn.close()
 
-            # حذف پیام اصلی حاوی لینک کاربر
             await update.message.delete()
 
-            # نام نمایشی تمیز برای استفاده در منو
             display_name = telegram_username if telegram_username else update.effective_user.first_name
 
-            # ساخت دکمه‌های شیشه‌ای برای منوی انتخاب (پیش‌فرض همه غیرفعال ❌)
             setup_keyboard = [
                 [
                     InlineKeyboardButton("👥 Follow ❌", callback_data="config_follow"),
@@ -218,7 +207,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
-            # ذخیره اطلاعات پست در حافظه موقت
             PENDING_POSTS[menu_msg.message_id] = {
                 "creator_id": user_id,
                 "username": display_name,
@@ -227,7 +215,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "options": {"follow": False, "like": False, "rt": False, "comment": False}
             }
 
-            # راه‌اندازی تایمر خودکار ۱۵ ثانیه‌ای برای ارسال اتوماتیک در صورت رها کردن منو
             asyncio.create_task(auto_approve_post_delayed(context.bot, update.effective_chat.id, menu_msg.message_id, 15))
             return
 
@@ -244,7 +231,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         await update.message.reply_text(f"✅ موفقیت‌آمیز بود!\nآیدی توییتر شما با موفقیت ثبت شد: @{twitter_id}")
 
-# مدیریت تمام کلیک‌ها (هم کلیک‌های تنظیمی و هم کلیک‌های حمایتی گروه)
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     clicker_id = query.from_user.id
@@ -252,7 +238,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_id = query.message.message_id
     data = query.data
 
-    # ------------------ بخش اول: مدیریت منوی تنظیمات شخصی پست ------------------
+    # ۱. مدیریت منوی تنظیمات
     if data.startswith("config_"):
         if message_id not in PENDING_POSTS:
             await query.answer("⚠️ زمان مجاز این منو به پایان رسیده است یا پست ثبت شده است.", show_alert=True)
@@ -260,24 +246,20 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         post_data = PENDING_POSTS[message_id]
         
-        # امنیت منو: فقط صاحب پست می‌تواند روی دکمه‌های تنظیمات کلیک کند
         if clicker_id != post_data["creator_id"]:
             await query.answer("❌ این منو اختصاصی است. شما نمی‌توانید تنظیمات پست دیگران را تغییر دهید!", show_alert=True)
             return
 
         action_type = data.split('_')[1]
 
-        # اگر کاربر روی دکمه تایید نهایی کلیک کند
         if action_type == "approve":
             post_data = PENDING_POSTS.pop(message_id, None)
             await query.answer("🚀 در حال فرستادن پست به گروه...")
             await deploy_final_post(context.bot, update.effective_chat.id, message_id, post_data, forced_all=False)
             return
 
-        # تغییر وضعیت تیک گزینه کلیک شده (Toggle True/False)
         post_data["options"][action_type] = not post_data["options"][action_type]
         
-        # بازسازی کیبورد منو با وضعیت تیک‌های جدید
         opts = post_data["options"]
         f_tick = "✅" if opts["follow"] else "❌"
         l_tick = "✅" if opts["like"] else "❌"
@@ -302,7 +284,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # ------------------ بخش دوم: مدیریت دکمه‌های اصلی حمایت در گروه ------------------
+    # ۲. مدیریت دکمه‌های اصلی حمایت
     if data.startswith("support_"):
         data_parts = data.split('_')
         action = data_parts[1]
@@ -394,7 +376,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
-    
     application = (
         Application.builder()
         .token(TOKEN)
@@ -403,12 +384,10 @@ def main():
         .post_init(post_init)
         .build()
     )
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_buttons))
-    
     print("ربات Xengage با موفقیت راه‌اندازی شد...")
     application.run_polling()
 
