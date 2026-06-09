@@ -1,3 +1,4 @@
+
 import sqlite3
 import logging
 import re
@@ -49,12 +50,12 @@ def init_db():
     conn.close()
 
 # تنظیم منوی دستورات ربات
-async def set_bot_commands(application: Application):
+async def set_bot_commands(app):
     commands = [
         BotCommand("start", "راه‌اندازی اولیه ربات"),
         BotCommand("register", "ثبت یا ویرایش آیدی توییتر (X)")
     ]
-    await application.bot.set_my_commands(commands)
+    await app.bot.set_my_commands(commands)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -251,10 +252,12 @@ def main():
         .build()
     )
     
-    # فعال‌سازی منوی دکمه‌ای ربات قبل از شروع پولینگ
-    application.job_queue.run_once(lambda ctx: set_bot_commands(application), 1)
-    
+    # فعال‌سازی منوی دکمه‌ای ربات به صورت مستقیم
     application.add_handler(CommandHandler("start", start))
+    
+    # اضافه کردن منو درست قبل از شروع کار ربات
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(set_bot_commands(application))
     application.add_handler(CommandHandler("register", register_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_buttons))
