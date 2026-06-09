@@ -1,6 +1,7 @@
 import sqlite3
 import logging
 import re
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, LinkPreviewOptions
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -35,7 +36,7 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )
     ''')
-    # جدول جدید برای بررسی اینکه هر کاربر روی کدام پیام چه دکمه‌ای زده است
+    # جدول اکشن‌ها برای بررسی کلیک‌های یکتا
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +49,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 🔥 متد جدید و استاندارد برای فعال‌سازی منو به محض روشن شدن ربات
+# تنظیم منو به محض روشن شدن ربات
 async def post_init(application: Application) -> None:
     commands = [
         BotCommand("start", "راه‌اندازی اولیه ربات"),
@@ -68,6 +69,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("لطفاً آیدی توییتر (X) خودت را بدون علامت @ ارسال کن:")
+
+# تابع کمکی برای حذف خودکار پیام (روی ۱۵ ثانیه تنظیم شد)
+async def delete_message_delayed(bot, chat_id, message_id, delay_seconds=15):
+    await asyncio.sleep(delay_seconds)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        print(f"🗑️ پیام اخطار {message_id} با موفقیت پس از {delay_seconds} ثانیه حذف شد.")
+    except Exception as e:
+        pass 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -91,10 +101,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not user_data:
                 await update.message.delete()
                 user_mention = f"@{telegram_username}" if telegram_username else update.effective_user.first_name
-                await context.bot.send_message(
+                
+                # 🔴 تغییر متن هشدار حذف به ۱۵ ثانیه برای لینک
+                alert_link_msg = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"❌ کاربر {user_mention}، لینک شما حذف شد!\nبرای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات (@XengageRobot) شده و آیدی توییتر خود را ثبت کنید."
+                    text=f"❌ کاربر {user_mention}، لینک شما حذف شد!\nبرای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات (@XengageRobot) شده و آیدی توییتر خود را ثبت کنید.\n\n⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._",
+                    parse_mode="Markdown"
                 )
+                # حذف راس ۱۵ ثانیه
+                asyncio.create_task(delete_message_delayed(context.bot, update.effective_chat.id, alert_link_msg.message_id, 15))
+                
                 conn.close()
                 return
 
@@ -103,10 +119,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             conn.close()
 
-            # حذف پیام اصلی کاربر حاوی لینک پیش‌نمایش دار
             await update.message.delete()
 
-            # ساخت دکمه‌های شیشه‌ای اولیه
             keyboard = [
                 [
                     InlineKeyboardButton("👥 Follow", callback_data=f"follow_{user_id}"),
@@ -125,7 +139,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👇 Please support and click the buttons below:"
             )
             
-            # حذف پیش‌نمایش بزرگ توییتر
             preview_options = LinkPreviewOptions(is_disabled=True)
 
             await context.bot.send_message(
@@ -164,7 +177,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data_parts[0]
     creator_id = int(data_parts[1])
 
-    # جلوگیری از کلیک روی پست خود شخص
     if clicker_id == creator_id:
         await query.answer("❌ شما نمی‌توانید پست خودتان را حمایت کنید!", show_alert=True)
         return
@@ -172,22 +184,22 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
 
-    # ۱. بررسی ثبت‌نام کلیک‌کننده
     cursor.execute('SELECT twitter_id, last_tweet_link FROM users WHERE user_id = ?', (clicker_id,))
     clicker_data = cursor.fetchone()
 
-    # 🔴 اصلاح شد: اگر ثبت‌نام نکرده بود، ارسال پیام تگ‌شده همراه با لینک در گروه
+    # اگر کاربر کلیک‌کننده غریبه باشد و ثبت‌نام نکرده باشد
     if not clicker_data:
-        await query.answer() # بستن حالت لودینگ دکمه
-        
+        await query.answer() 
         user_mention = f"@{clicker_username}" if clicker_username else query.from_user.first_name
-        # ارسال پیام راهنمایی در گروه
-        alert_msg = await context.bot.send_message(
+        
+        # 🔴 تغییر متن هشدار حذف به ۱۵ ثانیه برای دکمه
+        alert_btn_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"⚠️ کاربر {user_mention}، برای ثبت حمایت خود ابتدا باید در پی‌وی ربات ثبت‌نام کنید!\n🔗 ورود به ربات: @XengageRobot"
+            text=f"⚠️ کاربر {user_mention}، برای ثبت حمایت خود ابتدا باید در پی‌وی ربات ثبت‌نام کنید!\n🔗 ورود به ربات: @XengageRobot\n\n⏱ _این پیام طی ۱۵ ثانیه حذف می‌شود._",
+            parse_mode="Markdown"
         )
-        # حذف خودکار پیام اخطار بعد از ۱۵ ثانیه برای تمیز ماندن گروه
-        context.job_queue.run_once(lambda ctx: context.bot.delete_message(chat_id=update.effective_chat.id, message_id=alert_msg.message_id), 15)
+        # حذف راس ۱۵ ثانیه
+        asyncio.create_task(delete_message_delayed(context.bot, update.effective_chat.id, alert_btn_msg.message_id, 15))
         
         conn.close()
         return
@@ -195,7 +207,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clicker_twitter = clicker_data[0]
     clicker_last_link = clicker_data[1] if clicker_data[1] else "لینکی ثبت نشده است"
 
-    # ۲. بررسی محدودیت کلیک تکراری
     cursor.execute('SELECT id FROM actions WHERE message_id = ? AND user_id = ? AND action_type = ?', (message_id, clicker_id, action))
     already_done = cursor.fetchone()
 
@@ -204,7 +215,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    # ثبت در دیتابیس
     cursor.execute('INSERT INTO actions (message_id, user_id, action_type) VALUES (?, ?, ?)', (message_id, clicker_id, action))
     cursor.execute('INSERT INTO debts (debtor_id, creditor_id, action_type) VALUES (?, ?, ?)', (creator_id, clicker_id, action))
     conn.commit()
@@ -216,7 +226,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action_fa = {"follow": "فالو", "like": "لایک", "rt": "ریتوییت", "comment": "کامنت"}[action]
     await query.answer(f"✅ {action_fa} شما با موفقیت ثبت شد.")
 
-    # ۳. تغییر ظاهر دکمه‌ها
     current_keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     
@@ -233,7 +242,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
 
-    # ۴. ارسال نوتیفیکیشن به صاحب پست
     alert_text = (
         f"📣 حمایت جدید دریافت شد!\n\n"
         f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را [{action_fa}] کرد.\n\n"
@@ -242,14 +250,20 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
-        await context.bot.send_message(chat_id=creator_id, text=alert_text)
+        print(f"⏳ در حال ارسال پیام به پی‌وی صاحب پست ({creator_id})...")
+        preview_options = LinkPreviewOptions(is_disabled=True)
+        await context.bot.send_message(
+            chat_id=creator_id, 
+            text=alert_text,
+            link_preview_options=preview_options
+        )
+        print("✅ پیام با موفقیت به پی‌وی ارسال شد!")
     except Exception as e:
         logging.error(f"Could not send notification to {creator_id}: {e}")
 
 def main():
     init_db()
     
-    # استفاده از post_init برای راه‌اندازی امن منو بدون تداخل با لوپ پایتون
     application = (
         Application.builder()
         .token(TOKEN)
@@ -264,7 +278,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_buttons))
     
-    print("ربات Xengage با موفقیت روی پایتون جدید راه‌اندازی شد...")
+    print("ربات Xengage با موفقیت راه‌اندازی شد...")
     application.run_polling()
 
 if __name__ == '__main__':
