@@ -68,9 +68,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data = cursor.fetchone()
 
             if not user_data:
+                # پاک کردن لینک خام کاربر
                 await update.message.delete()
-                warning_msg = await update.message.reply_text(f"❌ کاربر @{telegram_username}، شما ابتدا باید در پی‌وی ربات (@XengageRobot) ثبت‌نام کنید!")
-                context.job_queue.run_once(lambda ctx: warning_msg.delete(), 10)
+                
+                # ساختن نام کاربر (حتی اگر آیدی @ نداشته باشد)
+                user_mention = f"@{telegram_username}" if telegram_username else update.effective_user.first_name
+                
+                # ارسال پیام اخطار قطعی در گروه
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"❌ کاربر {user_mention}، لینک شما حذف شد!\nبرای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات (@XengageRobot) شده و آیدی توییتر خود را ثبت کنید."
+                )
                 conn.close()
                 return
 
