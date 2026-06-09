@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, LinkPreviewOptions
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # فعال‌سازی سیستم لاگ
@@ -16,6 +16,7 @@ PROXY_URL = "http://127.0.0.1:10809"
 def init_db():
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
+    # جدول کاربران
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -24,6 +25,7 @@ def init_db():
             last_tweet_link TEXT
         )
     ''')
+    # جدول بدهی‌ها و تراکنش‌های کلی
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS debts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,15 +35,33 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )
     ''')
+    # جدول جدید برای بررسی اینکه هر کاربر روی کدام پیام چه دکمه‌ای زده است
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER,
+            user_id INTEGER,
+            action_type TEXT,
+            UNIQUE(message_id, user_id, action_type)
+        )
+    ''')
     conn.commit()
     conn.close()
+
+# تنظیم منوی دستورات ربات
+async def set_bot_commands(application: Application):
+    commands = [
+        BotCommand("start", "راه‌اندازی اولیه ربات"),
+        BotCommand("register", "ثبت یا ویرایش آیدی توییتر (X)")
+    ]
+    await application.bot.set_my_commands(commands)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_text = (
         f"سلام {user.first_name} عزیز! به ربات Xengage خوش آمدی.\n\n"
         "برای اینکه بتوانی در گروه حمایت شرکت کنی، باید آیدی توییتر خودت را ثبت کنی.\n"
-        "لطفاً آیدی توییترت را بدون @ ارسال کن."
+        "لطفاً دستور /register را بزن یا آیدی توییترت را بدون @ ارسال کن."
     )
     await update.message.reply_text(welcome_text)
 
@@ -68,13 +88,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data = cursor.fetchone()
 
             if not user_data:
-                # پاک کردن لینک خام کاربر
                 await update.message.delete()
-                
-                # ساختن نام کاربر (حتی اگر آیدی @ نداشته باشد)
                 user_mention = f"@{telegram_username}" if telegram_username else update.effective_user.first_name
-                
-                # ارسال پیام اخطار قطعی در گروه
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=f"❌ کاربر {user_mention}، لینک شما حذف شد!\nبرای فعالیت در گروه، ابتدا باید وارد پی‌وی ربات (@XengageRobot) شده و آیدی توییتر خود را ثبت کنید."
@@ -87,15 +102,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             conn.close()
 
+            # حذف پیام اصلی کاربر حاوی لینک پیش‌نمایش دار
             await update.message.delete()
 
-            # دکمه‌ها همراه با فالو
+            # ساخت دکمه‌های شیشه‌ای اولیه
             keyboard = [
                 [
-                    InlineKeyboardButton("👥 Followed", callback_data=f"follow_{user_id}"),
-                    InlineKeyboardButton("❤️ Liked", callback_data=f"like_{user_id}"),
-                    InlineKeyboardButton("🔁 Retweeted", callback_data=f"rt_{user_id}"),
-                    InlineKeyboardButton("💬 Commented", callback_data=f"comment_{user_id}")
+                    InlineKeyboardButton("👥 Follow", callback_data=f"follow_{user_id}"),
+                    InlineKeyboardButton("❤️ Like", callback_data=f"like_{user_id}"),
+                    InlineKeyboardButton("🔁 Retweet", callback_data=f"rt_{user_id}"),
+                    InlineKeyboardButton("💬 Comment", callback_data=f"comment_{user_id}")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -107,7 +123,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔗 **Link:** {tweet_link}\n\n"
                 f"👇 Please support and click the buttons below:"
             )
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=group_post_text, reply_markup=reply_markup, parse_mode="Markdown")
+            
+            # 🔥 این بخش پیش‌نمایش لینک بزرگ توییتر را کاملاً غیرفعال و حذف می‌کند
+            preview_options = LinkPreviewOptions(is_disabled=True)
+
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, 
+                text=group_post_text, 
+                reply_markup=reply_markup, 
+                parse_mode="Markdown",
+                link_preview_options=preview_options
+            )
             return
 
     # ۲. پردازش ثبت‌نام در پی‌وی (PV)
@@ -126,60 +152,93 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"✅ موفقیت‌آمیز بود!\nآیدی توییتر شما با موفقیت ثبت شد: @{twitter_id}")
 
-# پردازش کلیک روی دکمه‌ها
+# پردازش کلیک روی دکمه‌ها و مدیریت تغییر ظاهر و محدودیت کلیک
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # حذف حالت در حال لود دکمه
-    
     clicker_id = query.from_user.id
     clicker_username = query.from_user.username
+    message_id = query.message.message_id
     
-    # استخراج اطلاعات از callback_data (مثال: follow_123456)
     data_parts = query.data.split('_')
     action = data_parts[0]
     creator_id = int(data_parts[1])
 
-    # اگر کاربر خواست دکمه پست خودش را بزند، ربات مچش را می‌گیرد!
+    # جلوگیری از کلیک روی پست خود شخص
     if clicker_id == creator_id:
+        await query.answer("❌ شما نمی‌توانید پست خودتان را حمایت کنید!", show_alert=True)
         return
 
-    # بررسی اینکه آیا فرد حمایت‌کننده خودش ثبت‌نام کرده یا نه
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
+
+    # ۱. بررسی اینکه آیا کلیک‌کننده خودش ثبت‌نام کرده یا نه
     cursor.execute('SELECT twitter_id, last_tweet_link FROM users WHERE user_id = ?', (clicker_id,))
     clicker_data = cursor.fetchone()
 
     if not clicker_data:
-        # اگر ثبت نام نکرده بود، پی‌ام موقت به او نشان بده
+        await query.answer("❌ ابتدا باید در پی‌وی ربات آیدی توییتر خود را ثبت کنید!", show_alert=True)
+        conn.close()
         return
 
     clicker_twitter = clicker_data[0]
     clicker_last_link = clicker_data[1] if clicker_data[1] else "لینکی ثبت نشده است"
 
-    # ثبت در جدول بدهی‌ها (پست‌گذار حالا به حمایت‌کننده بدهکار است)
-    cursor.execute('''
-        INSERT INTO debts (debtor_id, creditor_id, action_type)
-        VALUES (?, ?, ?)
-    ''', (creator_id, clicker_id, action))
+    # ۲. 🛑 بررسی محدودیت: آیا این کاربر قبلاً این دکمه را برای این پیام زده؟
+    cursor.execute('SELECT id FROM actions WHERE message_id = ? AND user_id = ? AND action_type = ?', (message_id, clicker_id, action))
+    already_done = cursor.fetchone()
+
+    if already_done:
+        await query.answer("⚠️ شما قبلاً این حمایت را انجام داده‌اید و ثبت شده است!", show_alert=True)
+        conn.close()
+        return
+
+    # ثبت کلیک کاربر در جدول اکشن‌ها (برای قفل کردن کلیک مجدد)
+    cursor.execute('INSERT INTO actions (message_id, user_id, action_type) VALUES (?, ?, ?)', (message_id, clicker_id, action))
+    
+    # ثبت در جدول بدهی‌ها
+    cursor.execute('INSERT INTO debts (debtor_id, creditor_id, action_type) VALUES (?, ?, ?)', (creator_id, clicker_id, action))
     conn.commit()
+
+    # شمارش تعداد افرادی که تا الان این دکمه خاص را روی این پیام فشرده‌اند
+    cursor.execute('SELECT COUNT(id) FROM actions WHERE message_id = ? AND action_type = ?', (message_id, action))
+    action_count = cursor.fetchone()[0]
     conn.close()
 
-    # ترجمه اکشن به متن فارسی برای ارسال به پی‌وی
+    # تایید کلیک کاربر به صورت پاپ‌آپ ملایم بالای صفحه تلگرام
     action_fa = {"follow": "فالو", "like": "لایک", "rt": "ریتوییت", "comment": "کامنت"}[action]
+    await query.answer(f"✅ {action_fa} شما با موفقیت ثبت شد.")
 
-    # ارسال پیام خصوصی به صاحب پست (Creator)
+    # ۳. تغییر ظاهر دکمه‌ها: بازسازی کیبورد شیشه‌ای با زدن تیک سبز و نمایش تعداد کلیک‌ها
+    current_keyboard = query.message.reply_markup.inline_keyboard
+    new_keyboard = []
+    
+    for row in current_keyboard:
+        new_row = []
+        for button in row:
+            if button.callback_data == query.data:
+                # تغییر متن دکمه کلیک شده
+                label_en = {"follow": "Followed ✅", "like": "Liked ❤️ ✅", "rt": "Retweeted 🔁 ✅", "comment": "Commented 💬 ✅"}[action]
+                new_text = f"{label_en} ({action_count})"
+                new_row.append(InlineKeyboardButton(new_text, callback_data=button.callback_data))
+            else:
+                new_row.append(button)
+        new_keyboard.append(new_row)
+
+    # آپدیت کیبورد در گروه بدون تغییر متن پیام
+    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
+
+    # ۴. ارسال نوتیفیکیشن موفقیت به پی‌ویِ ربات برای صاحب پست
     alert_text = (
-        f"📣 **حمایت جدید دریافت شد!**\n\n"
-        f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را **{action_fa}** کرد.\n\n"
+        f"📣 حمایت جدید دریافت شد!\n\n"
+        f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را [{action_fa}] کرد.\n\n"
         f"تعهد شما: حالا نوبت شماست که او را حمایت کنید!\n"
         f"🔗 آخرین لینک این کاربر: {clicker_last_link}"
     )
     
     try:
-        await context.bot.send_message(chat_id=creator_id, text=alert_text, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=creator_id, text=alert_text)
     except Exception as e:
-        # اگر صاحب پست ربات را بلاک کرده باشد یا استارت نزده باشد
-        logging.error(f"Could not send PV message to {creator_id}: {e}")
+        logging.error(f"Could not send notification to {creator_id}: {e}")
 
 def main():
     init_db()
@@ -192,12 +251,15 @@ def main():
         .build()
     )
     
+    # فعال‌سازی منوی دکمه‌ای ربات قبل از شروع پولینگ
+    application.job_queue.run_once(lambda ctx: set_bot_commands(application), 1)
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(handle_buttons)) # هندلر دکمه‌ها
+    application.add_handler(CallbackQueryHandler(handle_buttons))
     
-    print("ربات Xengage روشن شد و منتظر پیام‌هاست...")
+    print("ربات Xengage با منوی جدید و دکمه‌های هوشمند روشن شد...")
     application.run_polling()
 
 if __name__ == '__main__':
