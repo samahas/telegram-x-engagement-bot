@@ -164,6 +164,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data_parts[0]
     creator_id = int(data_parts[1])
 
+    # جلوگیری از کلیک روی پست خود شخص
     if clicker_id == creator_id:
         await query.answer("❌ شما نمی‌توانید پست خودتان را حمایت کنید!", show_alert=True)
         return
@@ -171,17 +172,30 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
 
+    # ۱. بررسی ثبت‌نام کلیک‌کننده
     cursor.execute('SELECT twitter_id, last_tweet_link FROM users WHERE user_id = ?', (clicker_id,))
     clicker_data = cursor.fetchone()
 
+    # 🔴 اصلاح شد: اگر ثبت‌نام نکرده بود، ارسال پیام تگ‌شده همراه با لینک در گروه
     if not clicker_data:
-        await query.answer("❌ ابتدا باید در پی‌وی ربات آیدی توییتر خود را ثبت کنید!", show_alert=True)
+        await query.answer() # بستن حالت لودینگ دکمه
+        
+        user_mention = f"@{clicker_username}" if clicker_username else query.from_user.first_name
+        # ارسال پیام راهنمایی در گروه
+        alert_msg = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"⚠️ کاربر {user_mention}، برای ثبت حمایت خود ابتدا باید در پی‌وی ربات ثبت‌نام کنید!\n🔗 ورود به ربات: @XengageRobot"
+        )
+        # حذف خودکار پیام اخطار بعد از ۱۵ ثانیه برای تمیز ماندن گروه
+        context.job_queue.run_once(lambda ctx: context.bot.delete_message(chat_id=update.effective_chat.id, message_id=alert_msg.message_id), 15)
+        
         conn.close()
         return
 
     clicker_twitter = clicker_data[0]
     clicker_last_link = clicker_data[1] if clicker_data[1] else "لینکی ثبت نشده است"
 
+    # ۲. بررسی محدودیت کلیک تکراری
     cursor.execute('SELECT id FROM actions WHERE message_id = ? AND user_id = ? AND action_type = ?', (message_id, clicker_id, action))
     already_done = cursor.fetchone()
 
@@ -190,6 +204,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
+    # ثبت در دیتابیس
     cursor.execute('INSERT INTO actions (message_id, user_id, action_type) VALUES (?, ?, ?)', (message_id, clicker_id, action))
     cursor.execute('INSERT INTO debts (debtor_id, creditor_id, action_type) VALUES (?, ?, ?)', (creator_id, clicker_id, action))
     conn.commit()
@@ -201,6 +216,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action_fa = {"follow": "فالو", "like": "لایک", "rt": "ریتوییت", "comment": "کامنت"}[action]
     await query.answer(f"✅ {action_fa} شما با موفقیت ثبت شد.")
 
+    # ۳. تغییر ظاهر دکمه‌ها
     current_keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     
@@ -217,6 +233,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
 
+    # ۴. ارسال نوتیفیکیشن به صاحب پست
     alert_text = (
         f"📣 حمایت جدید دریافت شد!\n\n"
         f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را [{action_fa}] کرد.\n\n"
