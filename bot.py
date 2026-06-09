@@ -76,14 +76,20 @@ async def delete_message_delayed(bot, chat_id, message_id, delay_seconds=15):
     except Exception:
         pass 
 
+# تایمر خودکار پس‌زمینه
 async def auto_approve_post_delayed(bot, chat_id, message_id, delay_seconds=15):
     await asyncio.sleep(delay_seconds)
+    # بررسی می‌کنیم که آیا پست هنوز هست و آیا قبلاً توسط کاربر تایید شده یا نه
     if message_id in PENDING_POSTS:
-        post_data = PENDING_POSTS.pop(message_id, None)
-        if post_data:
-            await deploy_final_post(bot, chat_id, message_id, post_data, forced_all=True)
+        post_data = PENDING_POSTS[message_id]
+        if post_data.get("status") == "pending":
+            post_data["status"] = "deployed" # تغییر وضعیت برای جلوگیری از تداخل
+            # حذف امن از دیکشنری
+            data_to_deploy = PENDING_POSTS.pop(message_id, None)
+            if data_to_deploy:
+                await deploy_final_post(bot, chat_id, message_id, data_to_deploy, forced_all=True)
 
-# 🔥 تابع اصلاح شده با ساختار دکمه‌های استاندارد تلگرام
+# تابع نهایی مستقر کردن پست در گروه
 async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all=False):
     creator_id = post_data["creator_id"]
     telegram_username = post_data["username"]
@@ -91,21 +97,31 @@ async def deploy_final_post(bot, chat_id, original_msg_id, post_data, forced_all
     tweet_link = post_data["tweet_link"]
     options = post_data["options"]
 
-    keyboard_row = []
+    keyboard_buttons = []
     available_actions = ["follow", "like", "rt", "comment"]
     labels = {"follow": "👥 Follow", "like": "❤️ Like", "rt": "🔁 Retweet", "comment": "💬 Comment"}
 
     for action in available_actions:
         if forced_all or options[action]:
-            keyboard_row.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
+            keyboard_buttons.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
     
-    # اگر هیچ چیز انتخاب نکرده بود، همه را فعال کن
-    if not keyboard_row:
+    # اگر هیچ گزینه‌ای انتخاب نشده بود، پیش‌فرض همه را فعال کن
+    if not keyboard_buttons:
         for action in available_actions:
-            keyboard_row.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
+            keyboard_buttons.append(InlineKeyboardButton(labels[action], callback_data=f"support_{action}_{creator_id}"))
 
-    # اصلاح شد: ساختار کیبورد باید به صورت لیست در لیست (ماتریس) باشد
-    reply_markup = InlineKeyboardMarkup([keyboard_row])
+    # هر دکمه در یک ردیف جداگانه یا چیدمان منظم دو تایی برای ظاهر شیک‌تر در گروه
+    fixed_keyboard = []
+    row = []
+    for btn in keyboard_buttons:
+        row.append(btn)
+        if len(row) == 2:
+            fixed_keyboard.append(row)
+            row = []
+    if row:
+        fixed_keyboard.append(row)
+
+    reply_markup = InlineKeyboardMarkup(fixed_keyboard)
 
     group_post_text = (
         f"🚀 **New Support Request!**\n\n"
@@ -207,11 +223,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
+            # وضعیت اولیه روی pending تنظیم می‌شود
             PENDING_POSTS[menu_msg.message_id] = {
                 "creator_id": user_id,
                 "username": display_name,
                 "twitter": twitter_handle,
                 "tweet_link": tweet_link,
+                "status": "pending",
                 "options": {"follow": False, "like": False, "rt": False, "comment": False}
             }
 
@@ -238,13 +256,18 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_id = query.message.message_id
     data = query.data
 
-    # ۱. مدیریت منوی تنظیمات
+    # ۱. مدیریت منوی تنظیمات قبل ارسال
     if data.startswith("config_"):
         if message_id not in PENDING_POSTS:
             await query.answer("⚠️ زمان مجاز این منو به پایان رسیده است یا پست ثبت شده است.", show_alert=True)
             return
         
         post_data = PENDING_POSTS[message_id]
+        
+        # اگر وضعیت دیگر pending نباشد یعنی قبلاً پردازش شده
+        if post_data.get("status") != "pending":
+            await query.answer("⚠️ این پست قبلاً ارسال شده است.", show_alert=True)
+            return
         
         if clicker_id != post_data["creator_id"]:
             await query.answer("❌ این منو اختصاصی است. شما نمی‌توانید تنظیمات پست دیگران را تغییر دهید!", show_alert=True)
@@ -253,9 +276,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action_type = data.split('_')[1]
 
         if action_type == "approve":
-            post_data = PENDING_POSTS.pop(message_id, None)
+            post_data["status"] = "deployed" # تغییر وضعیت فوری برای قفل کردن تایمر همزمان
+            final_data = PENDING_POSTS.pop(message_id, None)
             await query.answer("🚀 در حال فرستادن پست به گروه...")
-            await deploy_final_post(context.bot, update.effective_chat.id, message_id, post_data, forced_all=False)
+            if final_data:
+                await deploy_final_post(context.bot, update.effective_chat.id, message_id, final_data, forced_all=False)
             return
 
         post_data["options"][action_type] = not post_data["options"][action_type]
@@ -284,7 +309,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # ۲. مدیریت دکمه‌های اصلی حمایت
+    # ۲. مدیریت دکمه‌های اصلی حمایت گروه
     if data.startswith("support_"):
         data_parts = data.split('_')
         action = data_parts[1]
