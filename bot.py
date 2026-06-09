@@ -1,4 +1,3 @@
-
 import sqlite3
 import logging
 import re
@@ -49,13 +48,14 @@ def init_db():
     conn.commit()
     conn.close()
 
-# تنظیم منوی دستورات ربات
-async def set_bot_commands(app):
+# 🔥 متد جدید و استاندارد برای فعال‌سازی منو به محض روشن شدن ربات
+async def post_init(application: Application) -> None:
     commands = [
         BotCommand("start", "راه‌اندازی اولیه ربات"),
         BotCommand("register", "ثبت یا ویرایش آیدی توییتر (X)")
     ]
-    await app.bot.set_my_commands(commands)
+    await application.bot.set_my_commands(commands)
+    print("✅ منوی دستورات ربات با موفقیت فعال شد.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -125,7 +125,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👇 Please support and click the buttons below:"
             )
             
-            # 🔥 این بخش پیش‌نمایش لینک بزرگ توییتر را کاملاً غیرفعال و حذف می‌کند
+            # حذف پیش‌نمایش بزرگ توییتر
             preview_options = LinkPreviewOptions(is_disabled=True)
 
             await context.bot.send_message(
@@ -153,7 +153,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"✅ موفقیت‌آمیز بود!\nآیدی توییتر شما با موفقیت ثبت شد: @{twitter_id}")
 
-# پردازش کلیک روی دکمه‌ها و مدیریت تغییر ظاهر و محدودیت کلیک
+# پردازش کلیک روی دکمه‌ها
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     clicker_id = query.from_user.id
@@ -164,7 +164,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data_parts[0]
     creator_id = int(data_parts[1])
 
-    # جلوگیری از کلیک روی پست خود شخص
     if clicker_id == creator_id:
         await query.answer("❌ شما نمی‌توانید پست خودتان را حمایت کنید!", show_alert=True)
         return
@@ -172,7 +171,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
 
-    # ۱. بررسی اینکه آیا کلیک‌کننده خودش ثبت‌نام کرده یا نه
     cursor.execute('SELECT twitter_id, last_tweet_link FROM users WHERE user_id = ?', (clicker_id,))
     clicker_data = cursor.fetchone()
 
@@ -184,7 +182,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clicker_twitter = clicker_data[0]
     clicker_last_link = clicker_data[1] if clicker_data[1] else "لینکی ثبت نشده است"
 
-    # ۲. 🛑 بررسی محدودیت: آیا این کاربر قبلاً این دکمه را برای این پیام زده؟
     cursor.execute('SELECT id FROM actions WHERE message_id = ? AND user_id = ? AND action_type = ?', (message_id, clicker_id, action))
     already_done = cursor.fetchone()
 
@@ -193,23 +190,17 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    # ثبت کلیک کاربر در جدول اکشن‌ها (برای قفل کردن کلیک مجدد)
     cursor.execute('INSERT INTO actions (message_id, user_id, action_type) VALUES (?, ?, ?)', (message_id, clicker_id, action))
-    
-    # ثبت در جدول بدهی‌ها
     cursor.execute('INSERT INTO debts (debtor_id, creditor_id, action_type) VALUES (?, ?, ?)', (creator_id, clicker_id, action))
     conn.commit()
 
-    # شمارش تعداد افرادی که تا الان این دکمه خاص را روی این پیام فشرده‌اند
     cursor.execute('SELECT COUNT(id) FROM actions WHERE message_id = ? AND action_type = ?', (message_id, action))
     action_count = cursor.fetchone()[0]
     conn.close()
 
-    # تایید کلیک کاربر به صورت پاپ‌آپ ملایم بالای صفحه تلگرام
     action_fa = {"follow": "فالو", "like": "لایک", "rt": "ریتوییت", "comment": "کامنت"}[action]
     await query.answer(f"✅ {action_fa} شما با موفقیت ثبت شد.")
 
-    # ۳. تغییر ظاهر دکمه‌ها: بازسازی کیبورد شیشه‌ای با زدن تیک سبز و نمایش تعداد کلیک‌ها
     current_keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     
@@ -217,7 +208,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_row = []
         for button in row:
             if button.callback_data == query.data:
-                # تغییر متن دکمه کلیک شده
                 label_en = {"follow": "Followed ✅", "like": "Liked ❤️ ✅", "rt": "Retweeted 🔁 ✅", "comment": "Commented 💬 ✅"}[action]
                 new_text = f"{label_en} ({action_count})"
                 new_row.append(InlineKeyboardButton(new_text, callback_data=button.callback_data))
@@ -225,10 +215,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_row.append(button)
         new_keyboard.append(new_row)
 
-    # آپدیت کیبورد در گروه بدون تغییر متن پیام
     await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
 
-    # ۴. ارسال نوتیفیکیشن موفقیت به پی‌ویِ ربات برای صاحب پست
     alert_text = (
         f"📣 حمایت جدید دریافت شد!\n\n"
         f"👤 کاربر @{clicker_username} (آیدی توییتر: @{clicker_twitter}) پست شما را [{action_fa}] کرد.\n\n"
@@ -244,25 +232,22 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
     
+    # استفاده از post_init برای راه‌اندازی امن منو بدون تداخل با لوپ پایتون
     application = (
         Application.builder()
         .token(TOKEN)
         .proxy(PROXY_URL)
         .get_updates_proxy(PROXY_URL)
+        .post_init(post_init)
         .build()
     )
     
-    # فعال‌سازی منوی دکمه‌ای ربات به صورت مستقیم
     application.add_handler(CommandHandler("start", start))
-    
-    # اضافه کردن منو درست قبل از شروع کار ربات
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(set_bot_commands(application))
     application.add_handler(CommandHandler("register", register_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_buttons))
     
-    print("ربات Xengage با منوی جدید و دکمه‌های هوشمند روشن شد...")
+    print("ربات Xengage با موفقیت روی پایتون جدید راه‌اندازی شد...")
     application.run_polling()
 
 if __name__ == '__main__':
